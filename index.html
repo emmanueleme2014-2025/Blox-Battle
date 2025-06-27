@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Fruit Grand Saga</title>
+  <style>
+    html, body { margin:0; padding:0; overflow:hidden; background:#000; }
+    canvas { display:block; background: linear-gradient(#79d0f1,#e6f7ff); }
+    #controls { position:absolute; bottom:20px; left:20px; z-index:1000; }
+    .btn {
+      background: rgba(255,255,255,0.7);
+      border:2px solid #333; padding:8px; margin:4px;
+      font:bold 14px sans-serif; border-radius:8px;
+      cursor:pointer; user-select:none;
+    }
+    #shopUI,#customMenu,#helpUI {
+      position:absolute; background:rgba(0,0,0,0.8);
+      color:#fff; padding:20px; font:14px sans-serif;
+      border:2px solid #fff; display:none; z-index:999;
+      max-width:80%; line-height:1.4;
+    }
+    #shopUI { right:20px; top:50px; width:220px; }
+    #customMenu { left:20px; top:50px; width:220px; }
+    #helpUI { top:100px; left:50%; transform:translateX(-50%); }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="controls">
+    <div>
+      <button class="btn" onmousedown="keys['arrowleft']=true" onmouseup="keys['arrowleft']=false">←</button>
+      <button class="btn" onmousedown="keys['arrowright']=true" onmouseup="keys['arrowright']=false">→</button>
+    </div>
+    <div>
+      <button class="btn" onclick="jumpKey()">Jump</button>
+      <button class="btn" onclick="attackKey()">Attack</button>
+      <button class="btn" onclick="eatKey()">Eat</button>
+      <button class="btn" onclick="dashKey()">Dash</button>
+      <button class="btn" onclick="rollKey()">Roll</button>
+    </div>
+  </div>
+  <div id="shopUI"></div>
+  <div id="customMenu"></div>
+  <div id="helpUI"></div>
+  <script>
+  // CANVAS SETUP
+  const canvas = document.getElementById("game"), ctx = canvas.getContext("2d");
+  canvas.width=innerWidth; canvas.height=innerHeight;
+  const groundY = canvas.height-100, gravity=1;
+  let cameraX=0, keys={}, mouse={};
+  document.addEventListener("keydown",e=>keys[e.key.toLowerCase()]=true);
+  document.addEventListener("keyup",e=>keys[e.key.toLowerCase()]=false);
+  // TOUCH-SIM KEYS
+  function jumpKey(){ keys[" "]=true; setTimeout(()=>keys[" "]=false,100); }
+  function attackKey(){ keys["x"]=true; setTimeout(()=>keys["x"]=false,100); }
+  function eatKey(){ keys["e"]=true; setTimeout(()=>keys["e"]=false,100); }
+  function dashKey(){ keys["q"]=true; setTimeout(()=>keys["q"]=false,100); }
+  function rollKey(){ keys["r"]=true; setTimeout(()=>keys["r"]=false,100); }
+
+  // PLAYER
+  const player = {
+    x:100,y:groundY-60,w:40,h:60,vx:0,vy:0,
+    jumping:false, jumpCount:0, maxAirJumps:50, airJumpTracker:0,
+    facing:1, hp:100, maxHp:100, xp:0, level:1, bounty:0,
+    fruit:"None", transformed:false, colorMod:0,
+    splashTimer:0, swimming:false,
+    rolling:false, rollTimer:0, rollDuration:15, rollSpeed:8, invulnerable:false,
+    name:"Luffy", character:"Luffy", weapon:"Sword", hat:true, outfit:"Classic"
+  };
+
+  // FRUITS
+  const fruits=[], bloxFruitTypes=[
+    {type:"Gomu",color:"orange"},
+    {type:"Mera",color:"red"},
+    {type:"Yami",color:"purple"},
+    {type:"Dragon",color:"gold"}
+  ];
+  function spawnRandomFruit(){
+    const t=bloxFruitTypes[Math.floor(Math.random()*bloxFruitTypes.length)];
+    fruits.push({
+      x:player.x+300+Math.random()*500,
+      y:groundY-40, type:t.type, color:t.color, hover:0
+    });
+  }
+  setInterval(spawnRandomFruit,30000);
+
+  function drawFruits(){
+    fruits.forEach(f=>{
+      f.hover=Math.sin(Date.now()*0.005+f.x)*4;
+      let fx=f.x-cameraX, fy=f.y+f.hover;
+      ctx.save();
+      ctx.translate(fx,fy);
+      ctx.beginPath(); ctx.arc(0,0,15,0,Math.PI*2);
+      ctx.fillStyle=f.color; ctx.shadowColor=f.color; ctx.shadowBlur=10; ctx.fill();
+      ctx.strokeStyle="#000"; ctx.stroke();
+      ctx.restore();
+      ctx.fillStyle="#fff"; ctx.fillText(f.type,fx,fy+30);
+    });
+  }
+  function eatFruitNearPlayer(){
+    for(let i=0;i<fruits.length;i++){
+      let f=fruits[i],dx=f.x-player.x,dy=f.y-player.y;
+      if(Math.abs(dx)<50&&Math.abs(dy)<50){
+        player.fruit=f.type; player.transformed=true; player.colorMod=10;
+        player.maxHp+=50; player.hp=Math.min(player.hp+50,player.maxHp);
+        player.bounty+=1e8; fruits.splice(i,1); break;
+      }
+    }
+  }
+
+  // SEA
+  function drawSea(){
+    let seaTop=groundY+10, waveH=6;
+    ctx.beginPath(); ctx.moveTo(0,seaTop);
+    for(let i=0;i<canvas.width;i++){
+      let y=seaTop+Math.sin((i+Date.now()*0.005)*0.05)*waveH;
+      ctx.lineTo(i,y);
+    }
+    ctx.lineTo(canvas.width,canvas.height);
+    ctx.lineTo(0,canvas.height); ctx.closePath();
+    ctx.fillStyle="#0077be"; ctx.fill();
+  }
+
+  // SWIMMING & SPLASH
+  function updateSwimming(){
+    const seaY=groundY+10;
+    if(player.y+player.h>seaY){
+      if(!player.swimming){ player.swimming=true; player.splashTimer=10; }
+      player.vy=Math.min(player.vy,2);
+      if(keys["arrowleft"]) player.vx=-1.5;
+      if(keys["arrowright"]) player.vx=1.5;
+      if(keys[" "]) player.vy=-2;
+      if(!player.transformed&&!player.invulnerable) player.hp-=0.2;
+    } else player.swimming=false;
+  }
+  function enforceJumpLimit(){
+    if(player.airJumpTracker>player.maxAirJumps){
+      player.transformed=false; player.fruit="None"; player.colorMod=0;
+      player.maxHp-=30; player.hp-=30; player.airJumpTracker=0;
+    }
+  }
+  function drawSwimmingFX(cx,cy){
+    if(player.swimming){
+      ctx.fillStyle="rgba(255,255,255,0.2)";
+      ctx.beginPath();
+      ctx.ellipse(cx,player.y+player.h-5,20,8,0,0,Math.PI*2); ctx.fill();
+      if(player.splashTimer>0){
+        player.splashTimer--;
+        ctx.beginPath();
+        ctx.arc(cx,player.y+player.h,25+(10-player.splashTimer),0,Math.PI*2);
+        ctx.strokeStyle=`rgba(255,255,255,${player.splashTimer/10})`;
+        ctx.stroke();
+      }
+    }
+  }
+
+  // BANDITS
+  let bandits=[];
+  function spawnBandits(){
+    bandits=[];
+    for(let x=600;x<5000;x+=300){
+      bandits.push({
+        x,y:groundY-60,w:40,h:60,vx:0,
+        hp:80+Math.random()*40,maxHp:100,damage:5,name:"Bandit"
+      });
+    }
+  }
+  spawnBandits();
+  function updateBandits(){
+    bandits.forEach((b,i)=>{
+      let dx=player.x-b.x;
+      if(Math.abs(dx)<400) b.vx=dx>0?1.5:-1.5; else b.vx=0;
+      b.x+=b.vx;
+      // collision
+      if(Math.abs(player.x-b.x)<40&&Math.abs((player.y+b.h/2)-(b.y+b.h/2))<50){
+        if(!player.invulnerable) player.hp-=b.damage*0.1;
+      }
+      // attack hits
+      if(player.attackTimer>0&&Math.abs(player.x-b.x)<50){
+        b.hp-=20;
+      }
+      if(b.hp<=0){ bandits.splice(i,1); player.xp++; player.bounty+=1e7; }
+    });
+  }
+  function drawBandits(){
+    bandits.forEach(b=>{
+      let bx=b.x-cameraX;
+      ctx.fillStyle="#552"; ctx.fillRect(bx-b.w/2,b.y,b.w,b.h);
+      ctx.fillStyle="#e0b080"; ctx.beginPath();
+      ctx.arc(bx,b.y-10,15,0,Math.PI*2); ctx.fill(); ctx.stroke();
+      ctx.fillStyle="#fff"; ctx.fillText(b.name,bx,b.y-30);
+      ctx.fillStyle="#f00"; ctx.fillRect(bx-20,b.y-20,40,5);
+      ctx.fillStyle="#0f0"; ctx.fillRect(bx-20,b.y-20,40*(b.hp/b.maxHp),5);
+    });
+  }
+
+  // UI: Shop, Customize, Help
+  const shopUI=document.getElementById("shopUI"), customMenu=document.getElementById("customMenu"), helpUI=document.getElementById("helpUI");
+  let shopOpen=false, customOpen=false, helpOpen=false;
+  function formatBig(n){ return n.toExponential(2).replace("+","e"); }
+
+  function toggleShop(){
+    shopOpen=!shopOpen; shopUI.style.display=shopOpen?"block":"none";
+    if(shopOpen) updateShopUI();
+  }
+  function updateShopUI(){
+    shopUI.innerHTML=`
+      <h3>Fruit Shop</h3>
+      <div>Bounty: ${formatBig(player.bounty)}</div>
+      <button onclick="buyFruit('Gomu',1e9)">Gomu (1e9)</button><br/>
+      <button onclick="buyFruit('Mera',1e9)">Mera (1e9)</button><br/>
+      <button onclick="buyFruit('Yami',1e10)">Yami (1e10)</button><br/>
+      <button onclick="buyFruit('Dragon',1e11)">Dragon (1e11)</button>
+    `;
+  }
+  function buyFruit(type,cost){
+    if(player.bounty>=cost){
+      player.bounty-=cost;
+      fruits.push({ x:player.x+100,y:groundY-40,type,color:
+        type==="Gomu"?"orange":type==="Mera"?"red":type==="Yami"?"purple":"gold",
+        hover:0
+      });
+      updateShopUI();
+    }
+  }
+  function toggleCustomize(){
+    customOpen=!customOpen; customMenu.style.display=customOpen?"block":"none";
+    if(!customOpen) return;
+    customMenu.innerHTML=`
+      <h3>Customize</h3>
+      <button onclick="player.character='Luffy';player.name='Luffy'">Luffy</button><br/>
+      <button onclick="player.character='Zoro';player.name='Zoro'">Zoro</button><br/>
+      <button onclick="setOutfit('Classic')">Classic</button>
+      <button onclick="setOutfit('Stealth')">Stealth</button><br/>
+      <button onclick="setWeapon('Sword')">Sword</button>
+      <button onclick="setWeapon('Dagger')">Dagger</button>
+      <button onclick="setWeapon('Staff')">Staff</button><br/>
+      <button onclick="toggleHat()">Hat</button>
+    `;
+  }
+  function setOutfit(o){ player.outfit=o; }
+  function setWeapon(w){ player.weapon=w; }
+  function toggleHat(){ player.hat=!player.hat; }
+
+  function toggleHelp(){
+    helpOpen=!helpOpen; helpUI.style.display=helpOpen?"block":"none";
+    if(helpOpen) updateHelpUI();
+  }
+  function updateHelpUI(){
+    helpUI.innerHTML=`
+      <h3>Controls</h3>
+      <ul>
+        <li>←/→: Move</li>
+        <li>Space: Jump / Swim ↑</li>
+        <li>X: Attack</li>
+        <li>E: Eat fruit</li>
+        <li>Q: Dash</li>
+        <li>R: Roll</li>
+        <li>S: Shop</li>
+        <li>C: Customize</li>
+        <li>H: Help</li>
+        <li>Tab: Switch Luffy/Zoro</li>
+      </ul>
+    `;
+  }
+
+  // listen for UI keys
+  document.addEventListener("keydown",e=>{
+    if(e.key.toLowerCase()==="s") toggleShop();
+    if(e.key.toLowerCase()==="c") toggleCustomize();
+    if(e.key.toLowerCase()==="h") toggleHelp();
+    if(e.key==="Tab"){ e.preventDefault();
+      player.character = player.character==="Luffy"?"Zoro":"Luffy";
+      player.name = player.character;
+    }
+  });
+
+  // DRAW & UPDATE
+  function drawWorld(){
+    ctx.fillStyle="#3a3"; ctx.fillRect(-1e4-cameraX,groundY,2e4,100);
+    drawSea();
+  }
+  function drawUI(){
+    ctx.fillStyle="#000"; ctx.fillRect(20,20,200,10);
+    ctx.fillStyle="#0f0"; ctx.fillRect(20,20,200*(player.xp/10),10);
+    ctx.strokeStyle="#fff"; ctx.strokeRect(20,20,200,10);
+    ctx.fillStyle="#fff"; ctx.fillText(`L:${player.level}`,20,50);
+    ctx.fillText(`B:${formatBig(player.bounty)}`,20,70);
+  }
+
+  let attackTimer=0;
+  function updatePlayer(){
+    // roll start
+    if(keys["r"]&&!player.rolling&&player.rollTimer===0){
+      player.rolling=true; player.invulnerable=true;
+      player.rollTimer=player.rollDuration;
+    }
+    if(player.rolling){
+      player.vx=player.facing*player.rollSpeed;
+      player.rollTimer--;
+      if(player.rollTimer<=0){
+        player.rolling=false; player.invulnerable=false; player.rollTimer=0;
+      }
+    }
+
+    // movement
+    if(!player.rolling&&!player.swimming){
+      let sp=3;
+      player.vx=0;
+      if(keys["arrowleft"]){ player.vx=-sp; player.facing=-1; }
+      if(keys["arrowright"]){ player.vx=sp; player.facing=1; }
+      if(keys[" "]){
+        if(!player.jumping && player.jumpCount<2){
+          player.vy=-14; player.jumping=true;
+          player.jumpCount++; player.airJumpTracker++;
+        }
+      } else player.jumping=false;
+      enforceJumpLimit();
+    }
+
+    updateSwimming();
+
+    // gravity & apply
+    player.vy+=gravity;
+    player.x+=player.vx; player.y+=player.vy;
+
+    if(player.y+player.h>groundY){
+      player.y=groundY-player.h; player.vy=0;
+      player.jumpCount=0; player.airJumpTracker=0;
+    }
+    cameraX=player.x-canvas.width/2;
+  }
+
+  function drawPlayer(p){
+    const cx=p.x-cameraX+p.w/2, cy=p.y+p.h/2;
+    // aura
+    if(p.colorMod>0){
+      ctx.fillStyle=`rgba(255,255,0,${p.colorMod/10})`;
+      ctx.beginPath(); ctx.arc(cx,cy,60,0,Math.PI*2); ctx.fill();
+    }
+    // rolling blur
+    if(p.rolling){
+      ctx.save(); ctx.globalAlpha=0.6;
+      for(let i=0;i<3;i++){
+        ctx.translate(p.facing*3,0);
+        ctx.fillStyle=p.character==="Luffy"?"red":"#228b22";
+        ctx.fillRect(cx-15, p.y+20, 30, 40);
+      }
+      ctx.restore();
+    }
+    // swimming
+    if(p.swimming){
+      drawSwimmingFX(cx,cy);
+      let wave=Math.sin(Date.now()*0.01)*6;
+      ctx.strokeStyle="#000"; ctx.beginPath();
+      ctx.moveTo(cx,p.y+20);
+      ctx.lineTo(cx-12+wave,p.y+30);
+      ctx.moveTo(cx,p.y+20);
+      ctx.lineTo(cx+12-wave,p.y+30);
+      ctx.stroke();
+    } else {
+      // body & outfit
+      if(p.character==="Luffy"){
+        ctx.fillStyle="red"; ctx.fillRect(cx-15,p.y+20,30,40);
+        ctx.fillStyle="#ffe0a0"; ctx.beginPath();
+        ctx.arc(cx,p.y-10,12,0,Math.PI*2); ctx.fill(); ctx.stroke();
+        if(p.hat){
+          ctx.fillStyle="#ffd700"; ctx.beginPath();
+          ctx.arc(cx,p.y-22,16,0,Math.PI); ctx.fill(); ctx.stroke();
+        }
+      } else {
+        ctx.fillStyle="#228b22"; ctx.fillRect(cx-15,p.y+20,30,40);
+        ctx.fillStyle="#ffe0a0"; ctx.beginPath();
+        ctx.arc(cx,p.y-10,12,0,Math.PI*2); ctx.fill(); ctx.stroke();
+        if(p.hat){
+          ctx.fillStyle="#333"; ctx.fillRect(cx-20,p.y+30,5,20);
+          ctx.fillRect(cx+15,p.y+30,5,20);
+        }
+      }
+      // arms
+      ctx.strokeStyle="#000"; ctx.beginPath();
+      ctx.moveTo(cx,p.y+20); ctx.lineTo(cx-12,p.y+30);
+      ctx.moveTo(cx,p.y+20); ctx.lineTo(cx+12,p.y+30); ctx.stroke();
+      // weapon
+      let hx=cx+p.facing*12, hy=p.y+30;
+      ctx.strokeStyle="#000"; ctx.fillStyle="#999"; ctx.lineWidth=3;
+      if(p.weapon==="Sword"){
+        ctx.beginPath();
+        ctx.moveTo(hx,hy);
+        ctx.lineTo(hx+p.facing*30,hy-5);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(hx,hy);
+        ctx.lineTo(hx-p.facing*5,hy+10);
+        ctx.lineTo(hx+p.facing*5,hy+10);
+        ctx.closePath(); ctx.fill();
+      } else if(p.weapon==="Staff"){
+        ctx.beginPath();
+        ctx.moveTo(hx,hy); ctx.lineTo(hx,hy-40); ctx.stroke();
+        ctx.beginPath(); ctx.arc(hx,hy-40,6,0,Math.PI*2); ctx.fill();
+      } else if(p.weapon==="Dagger"){
+        ctx.beginPath();
+        ctx.moveTo(hx,hy);
+        ctx.lineTo(hx+p.facing*20,hy);
+        ctx.lineTo(hx+p.facing*22,hy-8);
+        ctx.lineTo(hx+p.facing*18,hy-6);
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.lineWidth=1;
+      // legs
+      ctx.beginPath();
+      ctx.moveTo(cx,p.y+p.h);
+      ctx.lineTo(cx-10,p.y+p.h+20);
+      ctx.moveTo(cx,p.y+p.h);
+      ctx.lineTo(cx+10,p.y+p.h+20);
+      ctx.stroke();
+    }
+    // name & HP
+    ctx.fillStyle="#fff"; ctx.fillText(p.name,cx,p.y-28);
+    ctx.fillStyle="#f00"; ctx.fillRect(cx-20,p.y-18,40,5);
+    ctx.fillStyle="#0f0"; ctx.fillRect(cx-20,p.y-18,40*(p.hp/p.maxHp),5);
+    // decay aura
+    if(p.colorMod>0) p.colorMod-=0.1;
+  }
+
+  // MAIN LOOP
+  function gameLoop(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    drawWorld(); drawFruits();
+    updatePlayer(); drawPlayer(player);
+    updateBandits(); drawBandits();
+    drawUI();
+    requestAnimationFrame(gameLoop);
+  }
+  gameLoop();
+  </script>
+</body>
+</html>
+
